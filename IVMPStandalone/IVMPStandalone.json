@@ -1,0 +1,16 @@
+{
+    "Author": "Krisan Thyme & MrPolarbear & a cat",
+    "Name": "IVMP Standalone Editor",
+    "Punchline": "IVMP standalone editor",
+    "Description": "IVMP standalone editor",
+    "InternalName": "IVMPStandalone",
+    "ApplicableVersion": "any",
+    "IconUrl": "https://raw.githubusercontent.com/KrisanThyme/Illusio-Vitae/main/IVPlugin/Resources/Image/IVIcon.png",
+    "Tags": [
+        "illusio",
+        "vitae",
+        "animation",
+        "concept matrix",
+        "cmtool"
+    ]
+}
