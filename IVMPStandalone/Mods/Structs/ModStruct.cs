@@ -1,25 +1,8 @@
-using Dalamud.Game.Text;
-using FFXIVClientStructs.FFXIV.Client.Graphics.Vfx;
-using ImGuizmoNET;
-using IVPlugin.ActorData;
-using IVPlugin.Core;
-using IVPlugin.Core.Files;
-using IVPlugin.Json;
-using IVPlugin.Services;
-using IVPlugin.VFX;
-using Lumina.Excel.GeneratedSheets;
-using Lumina.Excel.GeneratedSheets2;
 using System;
 using System.Collections.Generic;
-using System.Data.SqlTypes;
 using System.IO;
 using System.Linq;
-using System.Numerics;
-using System.Text;
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
-using static Lumina.Data.Files.ScdFile;
 
 namespace IVPlugin.Mods.Structs
 {
@@ -45,23 +28,6 @@ namespace IVPlugin.Mods.Structs
             emoteData = new List<CustomEmoteData>();
         }
 
-        public XATCameraPathFile GetCameraFile(string folderPath)
-        {
-            var localPath = Path.Combine(folderPath, cameraPath).Replace("\\", "/");
-
-            XATCameraPathFile camera;
-
-            using (FileStream fs = File.Open(localPath, FileMode.Open))
-            {
-                using (BinaryReader br = new BinaryReader(fs))
-                {
-                    camera = new XATCameraPathFile(br);
-                }
-            }
-
-            return camera;
-        }
-
         public Dictionary<string, string> GetBGMDictionary(string folderPath)
         {
             Dictionary<string, string> temp = new();
@@ -78,7 +44,7 @@ namespace IVPlugin.Mods.Structs
             }
             return temp;
         }
-    
+
         public Dictionary<string, string> GetSharedResourcesDictionary(string folderPath)
         {
             Dictionary<string, string> temp = new();
@@ -177,7 +143,7 @@ namespace IVPlugin.Mods.Structs
 
             return temp;
         }
-    
+
     }
 
     [Serializable]
@@ -208,58 +174,13 @@ namespace IVPlugin.Mods.Structs
         public string scdPath { get; set; }
         public string orcScdPath { get; set; }
     }
-    
+
     [Serializable]
     public struct DataPaths
     {
         public string GamePath { get; set; }
         public string LocalPath { get; set; }
         public RaceCodes validRaces { get; set; }
-    }
-
-    public struct ModConfig
-    {
-        public string folderPath { get; set; }
-        public bool enabled { get; set; }
-        public bool cameraEnabled { get; set; }
-        public bool BGMEnabled { get; set; }
-        public bool VFXEnabled { get; set; }
-
-        public ModConfig(string path)
-        {
-            folderPath = path;
-            enabled = true;
-            cameraEnabled = true;
-            BGMEnabled = true;
-            VFXEnabled = true;
-        }
-
-        public void ToggleEnable()
-        {
-            enabled = !enabled;
-            SaveFile();
-        }
-        public void ToggleCamera()
-        {
-            cameraEnabled = !cameraEnabled;
-            SaveFile();
-        }
-        public void ToggleBGM()
-        {
-            BGMEnabled = !BGMEnabled;
-            SaveFile();
-        }
-
-        public void ToggleVFX()
-        {
-            VFXEnabled = !VFXEnabled;
-            SaveFile();
-        }
-
-        private void SaveFile()
-        {
-            File.WriteAllText(Path.Combine(folderPath, ModManager.configFileName), JsonHandler.Serialize(this));
-        }
     }
 
     [Serializable]

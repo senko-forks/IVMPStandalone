@@ -1,11 +1,7 @@
 using Dalamud.Interface.ImGuiFileDialog;
-using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
-using FFXIVClientStructs.FFXIV.Client.System.File;
-using IVPlugin.Core;
 using IVPlugin.Services;
 using IVPlugin.UI.Windows;
-using IVPlugin.Windows;
 using System;
 
 namespace IVPlugin.UI
@@ -27,12 +23,8 @@ namespace IVPlugin.UI
             Instance = this;
 
             pluginInterface.UiBuilder.Draw += DrawUI;
-            pluginInterface.UiBuilder.OpenMainUi += MainWindow.Show;
-            pluginInterface.UiBuilder.OpenConfigUi += ConfigWindow.Show;
+            pluginInterface.UiBuilder.OpenMainUi += ModCreationWindow.Show;
             pluginInterface.UiBuilder.DisableGposeUiHide = true;
-
-            DalamudServices.clientState.TerritoryChanged += (_) => { ApperanceWindow.Hide(); SkeletonOverlay.Hide(); };
-            EventManager.GPoseChange += (_) => { ApperanceWindow.Hide(); SkeletonOverlay.Hide(); };
         }
 
         private void DrawUI()
@@ -40,25 +32,13 @@ namespace IVPlugin.UI
             if(!DalamudServices.clientState.IsLoggedIn) return;
 
             fileDialogManager.Draw();
-            MainWindow.Draw();
-            ConfigWindow.Draw();
-            ApperanceWindow.Draw();
-            SkeletonOverlay.Draw();
-            ChangeLogWindow.Draw();
-            ASceneWarningWindow.Draw();
-            WrongLocationWindow.Draw();
-            OverlayHUD.Draw();
-            FirstTimeWindow.Draw();
             ModCreationWindow.Draw();
         }
 
         public void Dispose()
         {
             pluginInterface.UiBuilder.Draw -= DrawUI;
-            pluginInterface.UiBuilder.OpenMainUi -= MainWindow.Show;
-            pluginInterface.UiBuilder.OpenConfigUi -= ConfigWindow.Show;
-            DalamudServices.clientState.TerritoryChanged -= (_) => { ApperanceWindow.Hide(); SkeletonOverlay.Hide(); };
-            EventManager.GPoseChange -= (_) => { ApperanceWindow.Hide(); SkeletonOverlay.Hide(); };
+            pluginInterface.UiBuilder.OpenMainUi -= ModCreationWindow.Show;
             Instance = null!;
         }
     }

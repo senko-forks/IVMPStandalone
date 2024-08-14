@@ -1,19 +1,11 @@
 using Dalamud.Interface;
 using Dalamud.Interface.Utility.Raii;
 using ImGuiNET;
-using IVPlugin.ActorData;
 using IVPlugin.Json;
-using IVPlugin.Mods;
 using IVPlugin.Mods.Structs;
 using IVPlugin.Resources;
 using IVPlugin.Services;
 using IVPlugin.UI.Helpers;
-using IVPlugin.UI.Windows.Tabs;
-using Lumina;
-using Lumina.Data.Files;
-using Lumina.Excel.GeneratedSheets;
-using Microsoft.VisualBasic;
-using Penumbra.Api.IpcSubscribers;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -21,8 +13,6 @@ using System.IO.Compression;
 using System.Linq;
 using System.Numerics;
 using System.Text;
-using System.Threading.Tasks;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace IVPlugin.UI.Windows
 {
@@ -214,7 +204,7 @@ namespace IVPlugin.UI.Windows
                 ImGui.EndTabBar();
             }
         }
-    
+
         private static void ParsePMP()
         {
             Dictionary<string, string> filePaths = new Dictionary<string, string>();
@@ -225,7 +215,7 @@ namespace IVPlugin.UI.Windows
 
                 var FinalPath = Path.Combine(DalamudServices.PluginInterface.ConfigDirectory.FullName, "PMP");
 
-                if (Directory.Exists(FinalPath)) 
+                if (Directory.Exists(FinalPath))
                 {
                     Directory.Delete(FinalPath, true);
                 }
@@ -616,7 +606,7 @@ namespace IVPlugin.UI.Windows
                 //MessageBox.Show("Files are Missing or destination IVMP is in use, Task could not be Completed.", "Task Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
-    
+
         private static void GetRaceCodeFromPath(ref RaceCodes validRaces, string filePath)
         {
             if (filePath.Contains("c0101")) validRaces |= RaceCodes.C0101;
@@ -913,7 +903,7 @@ namespace IVPlugin.UI.Windows
                                 {
                                     var tempList = paths.ToList();
 
-                                    for(var i = 0; i < tempList.Count; i++) 
+                                    for(var i = 0; i < tempList.Count; i++)
                                     {
                                         tempList[i].Draw(i, this);
                                     }
@@ -1008,7 +998,7 @@ namespace IVPlugin.UI.Windows
 
                 using(var popup = ImRaii.Popup("RaceSelection"))
                 {
-                    if (popup.Success) 
+                    if (popup.Success)
                     {
                         var raceCodes = Enum.GetNames(typeof(RaceCodes));
 
@@ -1029,7 +1019,7 @@ namespace IVPlugin.UI.Windows
                             if (ImGui.Checkbox(raceCodes[i], ref result))
                             {
                                 if (result) tempRaces |= Enum.Parse<RaceCodes>(raceCodes[i]);
-                                else tempRaces ^= Enum.Parse<RaceCodes>(raceCodes[i]); 
+                                else tempRaces ^= Enum.Parse<RaceCodes>(raceCodes[i]);
 
                                 validRaces = tempRaces;
                             }
@@ -1049,7 +1039,7 @@ namespace IVPlugin.UI.Windows
                     }
                 }
             }
-            
+
         }
     }
 
@@ -1197,7 +1187,7 @@ namespace IVPlugin.UI.Windows
                 }
             }
         }
-            
+
     }
 
     public static class TracklistGenerator
@@ -1242,7 +1232,7 @@ namespace IVPlugin.UI.Windows
 
                 if(selectedTrackIndex != 0)
                     selectedTrackIndex--;
-                
+
                 var x =  tracks.ToList();
 
                 x.RemoveAt(trackTodelete);
@@ -1428,8 +1418,8 @@ namespace IVPlugin.UI.Windows
                     ImGui.SetTooltip(value2Desc);
                 }
             }
-            
-            
+
+
 
             ImGui.EndGroup();
         }
