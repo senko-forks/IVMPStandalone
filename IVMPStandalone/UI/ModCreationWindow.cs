@@ -14,6 +14,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Numerics;
+using System.Reflection.Metadata;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -50,7 +51,7 @@ namespace IVPlugin.UI.Windows
             Log.IllusioDebug.Log(msg, isError ? Log.LogType.Warning : Log.LogType.Info, !isError);
         }
 
-        public static void DrawTruncatedLocalPath(ref string localPath)
+        public static void DrawTruncatedLocalPath(ref string localPath, Action<string>? setLocalPathFn = null)
         {
             if (ImportedPMPPath == null)
             {
@@ -89,8 +90,9 @@ namespace IVPlugin.UI.Windows
                 {
                     if (!Confirm) return;
 
-                    // XXX BAD BROKEN AAAAAAA FIXME
-                    //localPath = FilePath;
+                    // hacky-ish idk
+                    if (setLocalPathFn != null)
+                        setLocalPathFn!(FilePath);
                 });
             }
         }
@@ -189,14 +191,14 @@ namespace IVPlugin.UI.Windows
 
             ImGui.Checkbox("Use NSFW Categories", ref allowNSFW);
 
-            if (ImGui.Button("Import pmp file"))
+            if (ImGui.Button("Import PMP file"))
             {
                 ParsePMP();
             }
 
             ImGui.SameLine();
 
-            if(ImGui.Button("Export IVMP"))
+            if(ImGui.Button("Export IVMP file"))
             {
                 CreateIVMP();
             }
@@ -293,6 +295,32 @@ namespace IVPlugin.UI.Windows
                 DoParsePMP(FilePath);
             });
         }
+
+        // Categories that are generally compatible for emotes
+        // This probably should be resolved hierarchically in one direction instead idk
+        // Maybe even need to probe which animation paths exist to determine this?
+        internal static readonly List<RaceCodes> RaceGroups = [
+            // Big Guys
+            RaceCodes.C0901 | RaceCodes.C1501,
+
+            // Males (including Big Guys)
+            RaceCodes.C0101 | RaceCodes.C0301 | RaceCodes.C0501 | RaceCodes.C0701 |
+            RaceCodes.C0901 | RaceCodes.C1301 | RaceCodes.C1501 | RaceCodes.C1701,
+
+            // Females
+            RaceCodes.C0201 | RaceCodes.C0401 | RaceCodes.C0601 | RaceCodes.C0801 |
+            RaceCodes.C1001 | RaceCodes.C1401 | RaceCodes.C1601 | RaceCodes.C1801,
+
+            // Talls (Male and Female combined)
+            // (Male/Female are also separate groups so that they will prioritize auto-assignments)
+            RaceCodes.C0101 | RaceCodes.C0301 | RaceCodes.C0501 | RaceCodes.C0701 |
+            RaceCodes.C0901 | RaceCodes.C1301 | RaceCodes.C1501 | RaceCodes.C1701 |
+            RaceCodes.C0201 | RaceCodes.C0401 | RaceCodes.C0601 | RaceCodes.C0801 |
+            RaceCodes.C1001 | RaceCodes.C1401 | RaceCodes.C1601 | RaceCodes.C1801,
+
+            // Lalafells
+            RaceCodes.C1101 | RaceCodes.C1201
+        ];
 
         private static void DoParsePMP(string FilePath)
         {
@@ -445,6 +473,48 @@ namespace IVPlugin.UI.Windows
                         tab.paths.Add(dataPath);
                     }
                 }
+
+                // Expand the compatible race list using generally compatible categories
+                foreach (var emote in emotes)
+                {
+                    var raceMask = (RaceCodes)0;
+
+                    foreach (var path in emote.paths)
+                    {
+                        if (!path.GamePath.IsNullOrEmpty())
+                            raceMask |= path.validRaces;
+                    }
+
+                    var allRaceCodes = Enum.GetValues(typeof(RaceCodes));
+
+                    foreach (RaceCodes raceCode in allRaceCodes)
+                    {
+                        foreach (var raceGroupMask in RaceGroups)
+                        {
+                            if (raceGroupMask.HasFlag(raceCode))
+                            {
+                                // We already have an animation that covers this race code...
+                                if (raceMask.HasFlag(raceCode))
+                                    continue;
+
+                                // Unassigned race -- look for the first compatible animation to add to
+                                // XXX: roe/hroth and lala pairings are handled with priority elsewhere
+                                // XXX: This isn't supposed to add lalafells to tall anims but it does anyway but it seems fine I guess
+                                foreach (var path in emote.paths)
+                                {
+                                    if ((raceGroupMask | path.validRaces) != (RaceCodes)0)
+                                    {
+                                        // Found a compatible race -- assign it
+                                        path.validRaces |= raceCode;
+                                        raceMask |= raceCode;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
             }
             catch (Exception ex)
             {
@@ -814,6 +884,19 @@ namespace IVPlugin.UI.Windows
             if (filePath.Contains("c1601")) validRaces |= RaceCodes.C1601;
             if (filePath.Contains("c1701")) validRaces |= RaceCodes.C1701;
             if (filePath.Contains("c1801")) validRaces |= RaceCodes.C1801;
+
+            // Dumb hack logic to pair roe/hroth, and lala anim assignments early on
+            if ((validRaces & RaceCodes.C0901) == RaceCodes.C0901)
+                validRaces |= RaceCodes.C1501;
+
+            if ((validRaces & RaceCodes.C1501) == RaceCodes.C1501)
+                validRaces |= RaceCodes.C0901;
+
+            if ((validRaces & RaceCodes.C1101) == RaceCodes.C1101)
+                validRaces |= RaceCodes.C1201;
+
+            if ((validRaces & RaceCodes.C1201) == RaceCodes.C1201)
+                validRaces |= RaceCodes.C1101;
         }
 
         private static (int animID, bool isLooping) DetectAnim(string papPath)
@@ -830,8 +913,29 @@ namespace IVPlugin.UI.Windows
 
             if(anim.Value != null)
             {
+                var animId = (int)anim.Value.RowId;
+
+                // Assign some animations to alternative IDs to avoid triggering certain game behaviours such as locking movement
+
+                if (animId == 643) animId = 788; // sit
+                if (animId == 3136) animId = 1065; // s_pose01_loop
+                if (animId == 3134) animId = 1066; // s_pose02_loop
+                // No s_pose03 or s_pose04 alternatives available
+
+                if (animId == 654) animId = 791; // jmn
+                if (animId == 3136) animId = 1067; // j_pose01_loop
+                if (animId == 3138) animId = 5661; // j_pose02_loop
+                if (animId == 3771) animId = 5662; // j_pose03_loop
+
+                if (animId == 3124) animId = 1052; // pose01_loop
+                if (animId == 3126) animId = 1053; // pose02_loop
+                if (animId == 3182) animId = 1054; // pose03_loop
+                if (animId == 3184) animId = 1055; // pose04_loop
+
+                // No l_pose alternatives available
+
                 return (
-                    (int)anim.Value.RowId,
+                    animId,
                     anim.Value.IsLoop
                 );
             }
@@ -932,6 +1036,7 @@ namespace IVPlugin.UI.Windows
         private string correlatedAnimName = "";
         private List<string> correlatedEmoteList = new();
         private bool animHasAnyOverride = false;
+        private bool animRestricted = false;
 
         private void CalculateAnimData()
         {
@@ -949,8 +1054,15 @@ namespace IVPlugin.UI.Windows
                     {
                         if (animID != 0 && emote.Value.ActionTimeline[i].Row == animID)
                         {
+                            var emoteId = emote.Value.RowId;
+
+                            if (emoteId is 50 or 52 or 88 or 95 or 96 or 97 or 98 or 99 or 100 or 117 or 254 or 255)
+                            {
+                                animRestricted = true;
+                            }
+
                             if (emote.Value.Name == string.Empty)
-                                correlatedEmoteList.Add($"Emote#{emote.Value.RowId} ({animationTypes[i]})");
+                                correlatedEmoteList.Add($"Emote#{emoteId} ({animationTypes[i]})");
                             else
                                 correlatedEmoteList.Add($"{emote.Value.Name} ({animationTypes[i]})");
                         }
@@ -985,6 +1097,13 @@ namespace IVPlugin.UI.Windows
             {
                 using var pushColor = ImRaii.PushColor(ImGuiCol.Text, 0xFF8080FF);
                 ImGui.Text("Animation ID does not seem to be valid");
+            }
+
+            if (animRestricted)
+            {
+                using var pushColor = ImRaii.PushColor(ImGuiCol.Text, 0xFF8080FF);
+                ImGui.Text("Sitting animation is used as a base emote!");
+                ImGui.Text("This will cause undesirable game behavior such as locking movement");
             }
 
             ImGui.Text("Emote: ");
@@ -1047,7 +1166,7 @@ namespace IVPlugin.UI.Windows
 
             CalculateAnimData();
 
-            bool animHasError = correlatedAnimName.IsNullOrEmpty() || !animHasAnyOverride;
+            bool animHasError = correlatedAnimName.IsNullOrEmpty() || !animHasAnyOverride || animRestricted;
 
             if (animHasError)
                 BearGUI.FontText(FontAwesomeIcon.ExclamationTriangle.ToIconString(), 1.25f, 0xFF80FFFF);
@@ -1227,43 +1346,6 @@ namespace IVPlugin.UI.Windows
                                             }
                                         }
                                     }
-
-                                    if (tempList.Count > 0 && raceMask != RaceCodes.all)
-                                    {
-                                        ImGui.Separator();
-                                        var origTextColor = ImGui.GetColorU32(ImGuiCol.Text);
-                                        using var pushColor = ImRaii.PushColor(ImGuiCol.Text, 0xFF80FFFF);
-
-                                        var raceCodes = Enum.GetNames(typeof(RaceCodes));
-
-                                        int displayCounter = 0;
-                                        for(var i = 0; i < raceCodes.Length - 1; i++)
-                                        {
-                                            RaceCodes raceCode = Enum.Parse<RaceCodes>(raceCodes[i]);
-
-                                            // Don't warn for explicitly unwanted genders
-                                            if ((ModCreationWindow.selectedCatagory == ModCatagory.Male || ModCreationWindow.selectedCatagory == ModCatagory.Gay) && i % 2 != 0)
-                                                continue;
-                                            if ((ModCreationWindow.selectedCatagory == ModCatagory.Female || ModCreationWindow.selectedCatagory == ModCatagory.Lesbian) && i % 2 != 1)
-                                                continue;
-
-                                            if (!raceMask.HasFlag(raceCode))
-                                            {
-                                                if (displayCounter == 0)
-                                                    ImGui.Text("Some races are not assigned:");
-                                                if (displayCounter % 9 != 0)
-                                                    ImGui.SameLine();
-                                                ImGui.Text(raceCodes[i]);
-                                                if (ImGui.IsItemHovered())
-                                                {
-                                                    using var tooltip = ImRaii.Tooltip();
-                                                    using var pushColor2 = ImRaii.PushColor(ImGuiCol.Text, origTextColor);
-                                                    ImGui.Text($"{raceCodes[i]}: {raceCode.GetDescription()}");
-                                                }
-                                                ++displayCounter;
-                                            }
-                                        }
-                                    }
                                 }
                             }
                             ImGui.EndTabItem();
@@ -1324,7 +1406,7 @@ namespace IVPlugin.UI.Windows
                 ImGui.SameLine(120);
                 ImGui.SetNextItemWidth(350);
                 //ImGui.InputText("##LocalpathInput", ref LocalPath, 500);
-                ModCreationWindow.DrawTruncatedLocalPath(ref LocalPath);
+                ModCreationWindow.DrawTruncatedLocalPath(ref LocalPath, x => LocalPath = x);
                 ImGui.EndGroup();
 
                 ImGui.SameLine();
@@ -1379,16 +1461,52 @@ namespace IVPlugin.UI.Windows
                             }
                         }
 
-                        if (ImGui.Button("Add All Races"))
+                        if (validRaces != RaceCodes.all)
                         {
-                            validRaces = RaceCodes.all;
+                            if (ImGui.Button("Add All Races"))
+                                validRaces = RaceCodes.all;
+                        }
+                        else
+                        {
+                            if (ImGui.Button("Remove All Races"))
+                                validRaces = (RaceCodes)0;
                         }
 
-                        ImGui.SameLine();
+                        RaceCodes maleRaces = ModCreationWindow.RaceGroups[1];
+                        RaceCodes femaleReaces = ModCreationWindow.RaceGroups[2];
+                        RaceCodes lalaRaces = ModCreationWindow.RaceGroups[4];
 
-                        if (ImGui.Button("Remove All Races"))
+                        if ((validRaces & maleRaces) != maleRaces)
                         {
-                            validRaces = 0;
+                            if (ImGui.Button("Add Male Talls"))
+                                validRaces |= maleRaces;
+                        }
+                        else
+                        {
+                            if (ImGui.Button("Remove Male Talls"))
+                                validRaces &= ~maleRaces;
+                        }
+
+                        if ((validRaces & femaleReaces) != femaleReaces)
+                        {
+                            if (ImGui.Button("Add Female Talls"))
+                                validRaces |= femaleReaces;
+                        }
+                        else
+                        {
+                            if (ImGui.Button("Remove Female Talls"))
+                                validRaces &= ~femaleReaces;
+                        }
+
+                        if ((validRaces & lalaRaces) != lalaRaces)
+                        {
+                            if (ImGui.Button("Add Lalafells"))
+                                validRaces |= lalaRaces;
+                        }
+                        else
+                        {
+                            if (ImGui.Button("Remove Lalafells"))
+                                validRaces &= ~lalaRaces;
                         }
                     }
                 }
