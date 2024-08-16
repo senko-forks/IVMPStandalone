@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
 
 namespace IVPlugin.Mods.Structs
@@ -220,27 +222,62 @@ namespace IVPlugin.Mods.Structs
     [Flags]
     public enum RaceCodes : uint
     {
+        [Description("Midlander Male")]
         C0101 = 1,
+        [Description("Midlander Female")]
         C0201 = 2,
+        [Description("Highlander Male")]
         C0301 = 4,
+        [Description("Highlander Female")]
         C0401 = 8,
+        [Description("Elezen Male")]
         C0501 = 16,
+        [Description("Elezen Female")]
         C0601 = 32,
+        [Description("Miqo'te Male")]
         C0701 = 64,
+        [Description("Miqo'te Female")]
         C0801 = 128,
+        [Description("Roegadyn Male")]
         C0901 = 256,
+        [Description("Roegadyn Female")]
         C1001 = 512,
+        [Description("Lalafell Male")]
         C1101 = 1024,
+        [Description("Lalafell Female")]
         C1201 = 2048,
+        [Description("Au'ra Male")]
         C1301 = 4096,
+        [Description("Au'ra Female")]
         C1401 = 8192,
+        [Description("Hrothgar Male")]
         C1501 = 16384,
+        [Description("Hrothar Female")]
         C1601 = 32768,
+        [Description("Viera Male")]
         C1701 = 65536,
+        [Description("Viera Female")]
         C1801 = 131072,
 
         all = C0101 | C0201 | C0301 | C0401 | C0501 | C0601 | C0701 | C0801 | C0901 | C1001 | C1101 | C1201 | C1301 | C1401 | C1501 | C1601 | C1701 | C1801,
     }
+
+    public static class RaceCodeExtensions
+    {
+        public static string? GetDescription(this Enum value)
+        {
+            var type = value.GetType();
+            var name = Enum.GetName(type, value);
+            if (name != null)
+            {
+                var field = type.GetField(name);
+                if (field != null)
+                    return (Attribute.GetCustomAttribute(field, typeof(DescriptionAttribute)) as DescriptionAttribute)?.Description;
+            }
+            return null;
+        }
+    }
+
     [Flags]
     public enum EmoteType : byte {Full, Additive}
 }

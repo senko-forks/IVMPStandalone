@@ -1,5 +1,7 @@
 using Dalamud.Interface;
+using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Utility.Raii;
+using Dalamud.Utility;
 using ImGuiNET;
 using IVPlugin.Json;
 using IVPlugin.Mods.Structs;
@@ -12,7 +14,9 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Numerics;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace IVPlugin.UI.Windows
 {
@@ -32,16 +36,75 @@ namespace IVPlugin.UI.Windows
 
         public static List<ModEmoteTab> emotes = new() { new() };
 
+        private static string SaveAsDefaultName = "NewMod.ivmp";
+        public static string? ImportedPMPPath = null;
+
+        private static void ShowNotification(string msg, bool isError = true)
+        {
+            DalamudServices.notificationManager.AddNotification(new Notification()
+            {
+                Title = "IVMP Mod Creation",
+                Type = isError ? NotificationType.Error : NotificationType.Info,
+                Content = msg
+            });
+            Log.IllusioDebug.Log(msg, isError ? Log.LogType.Warning : Log.LogType.Info, !isError);
+        }
+
+        public static void DrawTruncatedLocalPath(ref string localPath)
+        {
+            if (ImportedPMPPath == null)
+            {
+                ImGui.Text(localPath);
+                return;
+            }
+
+            bool clicked = false;
+
+            if (localPath.StartsWith(ImportedPMPPath))
+            {
+                string tmp = "PMP:" + localPath.Substring(ImportedPMPPath.Length);
+                string tmp2 = tmp;
+                ImGui.InputText("##LocalpathInput", ref tmp, 500);
+                ImGui.SameLine();
+                clicked = ImGui.Button("Browse##LocalPath");
+
+                if (tmp != tmp2)
+                {
+                    if (tmp.Substring(0, 4) == "PMP:")
+                        localPath = ImportedPMPPath + tmp.Substring(4);
+                    else
+                        localPath = tmp;
+                }
+            }
+            else
+            {
+                ImGui.InputText("##LocalpathInput", ref localPath, 500);
+                ImGui.SameLine();
+                clicked = ImGui.Button("Browse##LocalPath");
+            }
+
+            if (clicked)
+            {
+                WindowsManager.Instance.fileDialogForPMPManager.OpenFileDialog("Square File", ".*", (Confirm, FilePath) =>
+                {
+                    if (!Confirm) return;
+
+                    // XXX BAD BROKEN AAAAAAA FIXME
+                    //localPath = FilePath;
+                });
+            }
+        }
+
         public static void Draw()
         {
             if (!IsOpen) return;
 
-            var size = new Vector2(400, 200);
+            var size = new Vector2(1000, 500);
             ImGui.SetNextWindowSize(size, ImGuiCond.FirstUseEver);
 
-            ImGui.SetNextWindowSizeConstraints(new(100, 100), new Vector2(900, 700));
+            ImGui.SetNextWindowSizeConstraints(new(1000, 500), new Vector2(9999, 9999));
 
-            if (ImGui.Begin($"Mod Creation", ref IsOpen, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+            if (ImGui.Begin("IVMP Mod Creation (IVMPStandalone)", ref IsOpen, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
             {
                 ShowMeta();
                 ShowEmotes();
@@ -53,22 +116,22 @@ namespace IVPlugin.UI.Windows
             ImGui.BeginGroup();
             ImGui.Text("Mod Name:");
             ImGui.SameLine(90);
-            ImGui.SetNextItemWidth(100);
+            ImGui.SetNextItemWidth(200);
             ImGui.InputText("##ModNameInput", ref ModName, 100);
             ImGui.Spacing();
             ImGui.Text("Mod Author:");
             ImGui.SameLine(90);
-            ImGui.SetNextItemWidth(100);
+            ImGui.SetNextItemWidth(200);
             ImGui.InputText("##ModAuthorInput", ref ModAuthor, 200);
             ImGui.Spacing();
             ImGui.Text("Camera File:");
             ImGui.SameLine(90);
-            ImGui.SetNextItemWidth(100);
+            ImGui.SetNextItemWidth(200);
             ImGui.InputText("##CameraFileInput", ref CamPath, 5000);
             ImGui.SameLine();
             if (ImGui.Button("Browse##.xcpbrowse"))
             {
-                WindowsManager.Instance.fileDialogManager.OpenFileDialog("Import Camera File", ".xcp", (Confirm, FilePath) =>
+                WindowsManager.Instance.fileDialogForPMPManager.OpenFileDialog("Import Camera File", ".xcp", (Confirm, FilePath) =>
                 {
                     if (!Confirm) return;
 
@@ -88,7 +151,7 @@ namespace IVPlugin.UI.Windows
             }
             ImGui.EndGroup();
 
-            ImGui.SameLine(300);
+            ImGui.SameLine(400);
 
             var currentCatagory = Enum.GetName<ModCatagory>(selectedCatagory);
 
@@ -124,7 +187,7 @@ namespace IVPlugin.UI.Windows
 
             ImGui.SameLine();
 
-            ImGui.Checkbox("Use NSFW Catagories", ref allowNSFW);
+            ImGui.Checkbox("Use NSFW Categories", ref allowNSFW);
 
             if (ImGui.Button("Import pmp file"))
             {
@@ -155,6 +218,8 @@ namespace IVPlugin.UI.Windows
             allowNPC = true;
             sharedResources = new() { paths = new()};
             emotes = new() { new() };
+            WindowsManager.Instance.fileDialogForPMPManager.Reset();
+            SaveAsDefaultName = "NewMod.ivmp";
         }
 
         private static void ShowEmotes()
@@ -205,14 +270,35 @@ namespace IVPlugin.UI.Windows
             }
         }
 
+        internal struct SHA1HashKey
+        {
+            public ulong A;
+            public ulong B;
+            public uint C;
+
+            public SHA1HashKey(byte[] data)
+            {
+                A = BitConverter.ToUInt64(data, 0);
+                B = BitConverter.ToUInt64(data, 8);
+                C = BitConverter.ToUInt32(data, 16);
+            }
+        }
+
         private static void ParsePMP()
         {
-            Dictionary<string, string> filePaths = new Dictionary<string, string>();
-
             WindowsManager.Instance.fileDialogManager.OpenFileDialog("PMP To Convert", ".pmp", (Confirm, FilePath) =>
             {
                 if (!Confirm) return;
+                ResetFields();
+                DoParsePMP(FilePath);
+            });
+        }
 
+        private static void DoParsePMP(string FilePath)
+        {
+            try
+            {
+                Dictionary<string, string> filePaths = new Dictionary<string, string>();
                 var FinalPath = Path.Combine(DalamudServices.PluginInterface.ConfigDirectory.FullName, "PMP");
 
                 if (Directory.Exists(FinalPath))
@@ -220,9 +306,21 @@ namespace IVPlugin.UI.Windows
                     Directory.Delete(FinalPath, true);
                 }
 
+                WindowsManager.Instance.fileDialogForPMPManager.CustomSideBarItems.Add(new ()
+                {
+                    Name = "Imported PMP",
+                    Path = FinalPath,
+                    Icon = FontAwesomeIcon.Folder,
+                    Position = 999
+                });
+
+                ImportedPMPPath = FinalPath;
+
+                SaveAsDefaultName = Path.GetFileNameWithoutExtension(FilePath) + ".ivmp";
+
                 var TempPmp = Directory.CreateDirectory(FinalPath);
 
-                using(var zip = new ZipArchive(File.Open(FilePath, FileMode.Open)))
+                using(var zip = new ZipArchive(File.Open(FilePath, FileMode.Open, FileAccess.Read)))
                 {
                     zip.ExtractToDirectory(FinalPath);
                 }
@@ -247,10 +345,11 @@ namespace IVPlugin.UI.Windows
                     {
                         var mod = JsonHandler.Deserialize<PMPMod>(File.ReadAllText(file));
 
-                        if(mod.Files.Count > 0)
+                        if(mod.Files != null && mod.Files.Count > 0)
                         {
                             foreach(var modfile in mod.Files)
                             {
+                                DalamudServices.log.Info($"Add from default: GamePath={modfile.Key}");
                                 filePaths.Add(modfile.Key, modfile.Value);
                             }
                         }
@@ -262,66 +361,96 @@ namespace IVPlugin.UI.Windows
 
                     var group = JsonHandler.Deserialize<PMPGroup>(File.ReadAllText(file));
 
-                    if(group.Options.Count > 0)
+                    if(group.Options != null && group.Options.Count > 0)
                     {
                         foreach(var groupfile in group.Options)
                         {
                             foreach(var files in groupfile.Files)
                             {
+                                DalamudServices.log.Info($"Add from group: GamePath={files.Key}");
                                 filePaths.TryAdd(files.Key, files.Value);
                             }
                         }
                     }
                 }
 
-                Dictionary<string, RaceCodes> uniquePaps = new();
+                // Unique animation keys (i.e. filenames) will create separate emotes
+                // Unique file contents will create different racial variants
+                Dictionary<string, ModEmoteTab> uniquePaps = new();
+                Dictionary<(string, SHA1HashKey), DataPathsUI> uniqueContents = new();
 
                 emotes.Clear();
 
                 foreach (var file in filePaths.Keys)
                 {
+                    var localPath = Path.Combine(FinalPath, filePaths[file]);
+
                     if (Path.GetExtension(file) != ".pap")
                     {
-                        sharedResources.paths.Add(new() { validRaces = RaceCodes.all, GamePath = file, LocalPath = Path.Combine(FinalPath,filePaths[file])});
+                        sharedResources.paths.Add(new() { validRaces = RaceCodes.all, GamePath = file, LocalPath = localPath});
                         continue;
                     }
 
-                    var papName = Path.GetFileName(file);
+                    var (animID, isLooping) = DetectAnim(file);
 
-                    if (uniquePaps.ContainsKey(papName)) continue;
-
-                    RaceCodes validRaces = new();
-
-                    GetRaceCodeFromPath(ref validRaces, file);
-
-                    foreach (var subfile in filePaths.Keys)
+                    // Assume an unknown animation is a shared resource to be referenced, such as a facial animation
+                    if (animID == 0)
                     {
-                        if (Path.GetExtension(file) != ".pap") continue;
-
-                        if (subfile == file) continue;
-
-                        var subPapName = Path.GetFileName(subfile);
-
-                        if (subPapName != papName) continue;
-
-                        GetRaceCodeFromPath(ref validRaces, subfile);
+                        // It doesn't seem worth restricting the race IDs here but I could be wrong?
+                        var validRaces = RaceCodes.all;
+                        sharedResources.paths.Add(new() { validRaces = validRaces, GamePath = file, LocalPath = localPath});
+                        continue;
                     }
 
-                    uniquePaps.Add(papName, validRaces);
+                    // This fails to detect job-specific animations as being unique
+                    var papName = Path.GetFileName(file);
+                    var papHash = new SHA1HashKey(SHA1.HashData(File.ReadAllBytes(localPath)));
 
-                    DataPathsUI newPaths = new();
+                    bool isNewPapHash = !uniqueContents.TryGetValue((papName, papHash), out var dataPath);
+                    bool isNewPapName = !uniquePaps.TryGetValue(papName, out var tab);
 
-                    newPaths.validRaces = validRaces;
-                    newPaths.GamePath = file;
-                    newPaths.LocalPath = Path.Combine(FinalPath, filePaths[file]);
+                    if (isNewPapHash)
+                    {
+                        dataPath = new()
+                        {
+                            GamePath = file,
+                            LocalPath = localPath,
+                            validRaces = (RaceCodes)0
+                        };
+                        uniqueContents.Add((papName, papHash), dataPath);
+                    }
 
-                    int emoteID = GetEmoteID(Path.GetFileNameWithoutExtension(papName));
+                    // This either populates the initial races, or adds more races to an existing path
+                    GetRaceCodeFromPath(ref dataPath.validRaces, file);
 
-                    ModEmoteTab tab = new() {Command = $"{ModName}{uniquePaps.Count}", animID = emoteID, paths = new() { newPaths } };
+                    if (isNewPapName && animID != 0)
+                    {
+                        if (animID != 0)
+                        {
+                            DalamudServices.log.Info($"Adding new emote: GamePath={file}");
 
-                    emotes.Add(tab);
+                            var commandName = $"{ModName}{uniquePaps.Count+1}";
+
+                            commandName = Regex.Replace(commandName, "[^A-Za-z0-9]", "").ToLowerInvariant();
+
+                            tab = new() {Command = commandName, animID = animID, paths = new() { dataPath }, isLooping = isLooping };
+
+                            emotes.Add(tab);
+                            uniquePaps.Add(papName, tab);
+                        }
+                    }
+                    else if (isNewPapHash)
+                    {
+                        DalamudServices.log.Info($"Adding race variant: GamePath={file}");
+                        tab.paths.Add(dataPath);
+                    }
                 }
-            });
+            }
+            catch (Exception ex)
+            {
+                DalamudServices.log.Error(ex, "Error during PMP import");
+                ShowNotification("PMP import failed. See /xllog for more info");
+            }
         }
 
         public static void CreateIVMP()
@@ -342,12 +471,17 @@ namespace IVPlugin.UI.Windows
             {
                 if (string.IsNullOrEmpty(path.GamePath) || string.IsNullOrEmpty(path.LocalPath))
                 {
-                    //TODO
-                    //MessageBox.Show("Unfilled Fields detected in shared resources please either fix or remove", "Warning", MessageBoxButton.OK, MessageBoxImage.Hand);
+                    ShowNotification("Unfilled Fields detected in shared resources please either fix or remove");
                     return;
                 }
 
                 file.SharedResources.Add(new() { GamePath = path.GamePath, LocalPath = path.LocalPath });
+            }
+
+            if (emotes.Count == 0)
+            {
+                ShowNotification("No emotes have been created!");
+                return;
             }
 
             for (var i = 0; i < emotes.Count; i++)
@@ -358,9 +492,15 @@ namespace IVPlugin.UI.Windows
 
                 tempData.emoteCommand = currentEmoteData.Command;
 
-                if (currentEmoteData.Command is null)
+                if (currentEmoteData.Command.IsNullOrEmpty())
                 {
-                    //MessageBox.Show($"Emote #{i + 1} is missing an Emote Command!", "Task Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                    ShowNotification($"Emote #{i + 1} is missing an Emote Command!");
+                    return;
+                }
+
+                if (currentEmoteData.animID <= 0)
+                {
+                    ShowNotification($"Emote #{i + 1} has not been assigned an Animation ID!");
                     return;
                 }
 
@@ -379,22 +519,40 @@ namespace IVPlugin.UI.Windows
 
                     if (string.IsNullOrEmpty(currentPaths.GamePath) && string.IsNullOrEmpty(currentPaths.LocalPath))
                     {
-                        //MessageBox.Show($"Emote #{i + 1}, Data Path #{x + i} is missing information!", "Task Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                        ShowNotification($"Emote #{i + 1}, Data Path #{x + i} is missing information!");
                         return;
                     }
 
                     if (string.IsNullOrEmpty(currentPaths.GamePath) && !string.IsNullOrEmpty(currentPaths.LocalPath))
                     {
-                        //MessageBox.Show($"Emote #{i + 1}, Data Path #{x + i} is missing information!", "Task Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                        ShowNotification($"Emote #{i + 1}, Data Path #{x + i} is missing information!");
                         return;
                     }
 
                     if (!string.IsNullOrEmpty(currentPaths.GamePath) && string.IsNullOrEmpty(currentPaths.LocalPath))
                     {
-                        //MessageBox.Show($"Emote #{i + 1}, Data Path #{x + i} is missing information!", "Task Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                        ShowNotification($"Emote #{i + 1}, Data Path #{x + i} is missing information!");
                         return;
                     }
 
+                    var raceMask = (RaceCodes)0;
+                    var raceMaskDuplicate = (RaceCodes)0;
+
+                    foreach (var path in tempData.dataPaths)
+                    {
+                        var dupeMask = (raceMask & path.validRaces);
+                        raceMaskDuplicate |= dupeMask;
+
+                        if (!path.GamePath.IsNullOrEmpty())
+                            raceMask |= path.validRaces;
+                    }
+
+                    // For some reason having this causes the IV plugin to totally bug out
+                    if (raceMaskDuplicate != (RaceCodes)0)
+                    {
+                        ShowNotification($"Emote #{i + 1} contains duplicate race assignments!");
+                        return;
+                    }
 
                     DataPaths tempPaths = new()
                     {
@@ -424,19 +582,19 @@ namespace IVPlugin.UI.Windows
 
                         if (string.IsNullOrEmpty(currentVFXPaths.GamePath) && string.IsNullOrEmpty(currentVFXPaths.LocalPath))
                         {
-                            //MessageBox.Show($"Emote #{i + 1}, VFX #{x + i} Path #{y + i}is missing information!", "Task Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                            ShowNotification($"Emote #{i + 1}, VFX #{x + i} Path #{y + i}is missing information!");
                             return;
                         }
 
                         if (string.IsNullOrEmpty(currentVFXPaths.GamePath) && !string.IsNullOrEmpty(currentVFXPaths.LocalPath))
                         {
-                            //MessageBox.Show($"Emote #{i + 1}, VFX #{x + i} Path #{y + i}is missing information!", "Task Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                            ShowNotification($"Emote #{i + 1}, VFX #{x + i} Path #{y + i}is missing information!");
                             return;
                         }
 
                         if (!string.IsNullOrEmpty(currentVFXPaths.GamePath) && string.IsNullOrEmpty(currentVFXPaths.LocalPath))
                         {
-                            //MessageBox.Show($"Emote #{i + 1}, VFX #{x + i} Path #{y + i}is missing information!", "Task Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                            ShowNotification($"Emote #{i + 1}, VFX #{x + i} Path #{y + i}is missing information!");
                             return;
                         }
 
@@ -456,7 +614,7 @@ namespace IVPlugin.UI.Windows
                 file.emoteData.Add(tempData);
             }
 
-            WindowsManager.Instance.fileDialogManager.SaveFileDialog("Select a location to Save the Illusio Vitae Modpack", ".ivmp", $"NewMod.ivmp", ".ivmp", (Confirm, FilePath) =>
+            WindowsManager.Instance.fileDialogManager.SaveFileDialog("Select a location to Save the Illusio Vitae Modpack", ".ivmp", SaveAsDefaultName, ".ivmp", (Confirm, FilePath) =>
             {
                 if (!Confirm) return;
                 WriteIVMP(file, Path.GetDirectoryName(FilePath) + "\\" + Path.GetFileNameWithoutExtension(FilePath) + ".ivmp");
@@ -471,11 +629,23 @@ namespace IVPlugin.UI.Windows
             {
                 using (ZipArchive archive = ZipFile.Open(savePath, ZipArchiveMode.Create))
                 {
+                    var addedFiles = new HashSet<string>();
+
+                    // Silently accepts duplicate entries without added a second copy of the file
+                    void TryAddArchiveFile(string diskPath, string zipPath)
+                    {
+                        if (!string.IsNullOrEmpty(diskPath) && !addedFiles.Contains(zipPath))
+                        {
+                            addedFiles.Add(zipPath);
+                            archive.CreateEntryFromFile(diskPath, zipPath);
+                        }
+                    }
+
                     for (var i = 0; i < data.SharedResources.Count; i++)
                     {
                         if (!string.IsNullOrEmpty(data.SharedResources[i].LocalPath))
                         {
-                            archive.CreateEntryFromFile(data.SharedResources[i].LocalPath, $"Shared/" + Path.GetFileName(data.SharedResources[i].LocalPath));
+                            TryAddArchiveFile(data.SharedResources[i].LocalPath, $"Shared/" + Path.GetFileName(data.SharedResources[i].LocalPath));
                         }
 
                         DataPaths resourceData = data.SharedResources[i];
@@ -497,7 +667,7 @@ namespace IVPlugin.UI.Windows
                                 {
                                     if (!string.IsNullOrEmpty(tracklist.tracks[x].sValue))
                                     {
-                                        archive.CreateEntryFromFile(tracklist.tracks[x].sValue, $"Mod{i}/" + Path.GetFileName(tracklist.tracks[x].sValue));
+                                        TryAddArchiveFile(tracklist.tracks[x].sValue, $"Mod{i}/" + Path.GetFileName(tracklist.tracks[x].sValue));
 
                                         var tempTrack = tracklist.tracks[x];
                                         tempTrack.sValue = $"Mod{i}/" + Path.GetFileName(tracklist.tracks[x].sValue);
@@ -523,16 +693,32 @@ namespace IVPlugin.UI.Windows
                             data.emoteData[i] = tempData;
                         }
 
+                        // Organize pap files in to sub-folders only if neccessary (racial variants)
+                        var papFileSet = new HashSet<string>();
+                        bool needSubMod = false;
+
                         for (var ii = 0; ii < data.emoteData[i].dataPaths.Count; ii++)
                         {
+                            var papFile = Path.GetFileName(data.emoteData[i].dataPaths[ii].GamePath);
+                            if (papFileSet.Contains(papFile))
+                            {
+                                needSubMod = true;
+                                break;
+                            }
+                            papFileSet.Add(papFile);
+                        }
+
+                        for (var ii = 0; ii < data.emoteData[i].dataPaths.Count; ii++)
+                        {
+                            var subModFragment = needSubMod ? $"{ii+1}_" : string.Empty;
                             if (!string.IsNullOrEmpty(data.emoteData[i].dataPaths[ii].LocalPath))
                             {
-                                archive.CreateEntryFromFile(data.emoteData[i].dataPaths[ii].LocalPath, $"Mod{i}/" + Path.GetFileName(data.emoteData[i].dataPaths[ii].LocalPath));
+                                TryAddArchiveFile(data.emoteData[i].dataPaths[ii].LocalPath, $"Mod{i}/" + subModFragment + Path.GetFileName(data.emoteData[i].dataPaths[ii].LocalPath));
                             }
 
                             DataPaths emoteData = data.emoteData[i].dataPaths[ii];
 
-                            emoteData.LocalPath = $"Mod{i}/" + Path.GetFileName(data.emoteData[i].dataPaths[ii].LocalPath);
+                            emoteData.LocalPath = $"Mod{i}/" + subModFragment + Path.GetFileName(data.emoteData[i].dataPaths[ii].LocalPath);
 
                             data.emoteData[i].dataPaths[ii] = emoteData;
                         }
@@ -543,7 +729,7 @@ namespace IVPlugin.UI.Windows
                             {
                                 if (!string.IsNullOrEmpty(data.emoteData[i].vfxData[ii].vfxDatapaths[x].LocalPath))
                                 {
-                                    archive.CreateEntryFromFile(data.emoteData[i].vfxData[ii].vfxDatapaths[x].LocalPath, $"VFX{i}/SubVFX{ii}/" + Path.GetFileName(data.emoteData[i].vfxData[ii].vfxDatapaths[x].LocalPath));
+                                    TryAddArchiveFile(data.emoteData[i].vfxData[ii].vfxDatapaths[x].LocalPath, $"VFX{i}/SubVFX{ii}/" + Path.GetFileName(data.emoteData[i].vfxData[ii].vfxDatapaths[x].LocalPath));
                                 }
 
                                 DataPaths vfxData = data.emoteData[i].vfxData[ii].vfxDatapaths[x];
@@ -557,7 +743,7 @@ namespace IVPlugin.UI.Windows
 
                     if (!string.IsNullOrEmpty(data.cameraPath))
                     {
-                        archive.CreateEntryFromFile(data.cameraPath, "Camera/" + Path.GetFileName(data.cameraPath));
+                        TryAddArchiveFile(data.cameraPath, "Camera/" + Path.GetFileName(data.cameraPath));
 
                         data.cameraPath = $"Camera/{Path.GetFileName(data.cameraPath)}";
                     }
@@ -566,21 +752,21 @@ namespace IVPlugin.UI.Windows
 
                     if (!string.IsNullOrEmpty(data.bgmData.vfxPath))
                     {
-                        archive.CreateEntryFromFile(data.bgmData.vfxPath, "BGM/" + Path.GetFileName(data.bgmData.vfxPath));
+                        TryAddArchiveFile(data.bgmData.vfxPath, "BGM/" + Path.GetFileName(data.bgmData.vfxPath));
 
                         bgmData.vfxPath = $"BGM/{Path.GetFileName(data.bgmData.vfxPath)}";
                     }
 
                     if (!string.IsNullOrEmpty(data.bgmData.scdPath))
                     {
-                        archive.CreateEntryFromFile(data.bgmData.scdPath, "BGM/" + Path.GetFileName(data.bgmData.scdPath));
+                        TryAddArchiveFile(data.bgmData.scdPath, "BGM/" + Path.GetFileName(data.bgmData.scdPath));
 
                         bgmData.scdPath = $"BGM/{Path.GetFileName(data.bgmData.scdPath)}";
                     }
 
                     if (!string.IsNullOrEmpty(data.bgmData.orcScdPath))
                     {
-                        archive.CreateEntryFromFile(data.bgmData.orcScdPath, "BGM/" + Path.GetFileName(data.bgmData.orcScdPath));
+                        TryAddArchiveFile(data.bgmData.orcScdPath, "BGM/" + Path.GetFileName(data.bgmData.orcScdPath));
 
                         bgmData.orcScdPath = $"BGM/{Path.GetFileName(data.bgmData.orcScdPath)}";
                     }
@@ -598,12 +784,13 @@ namespace IVPlugin.UI.Windows
                         }
                     }
 
-                    //MessageBox.Show("Task completed successfuly.", "Task Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+                    ShowNotification($"{System.IO.Path.GetFileName(savePath)} exported", false);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                //MessageBox.Show("Files are Missing or destination IVMP is in use, Task could not be Completed.", "Task Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+                DalamudServices.log.Error(ex, "Error during IVMP creation");
+                ShowNotification("Files are Missing or destination IVMP is in use. See /xllog for more info");
             }
         }
 
@@ -629,16 +816,27 @@ namespace IVPlugin.UI.Windows
             if (filePath.Contains("c1801")) validRaces |= RaceCodes.C1801;
         }
 
-        private static int GetEmoteID(string fileName)
+        private static (int animID, bool isLooping) DetectAnim(string papPath)
         {
-            var emote = GameResourceManager.Instance.ActionTimelines.FirstOrDefault(x => x.Value.Key.RawString.Contains(fileName, StringComparison.OrdinalIgnoreCase));
+            var fileName = Path.GetFileNameWithoutExtension(papPath);
+            // Match the entire end of the path before falling back to more vague logic to avoid some ambiguous cases:
+            //   "emote/s_goodbye_st" vs "emote/goodbye_st"
+            //   "emote/angry_st" vs "facial/pose/angry_st"
+            var anim = GameResourceManager.Instance.ActionTimelines.FirstOrDefault(x => x.Value.Key.RawString.Length > 0 && papPath.EndsWith($"{x.Value.Key.RawString}.pap", StringComparison.OrdinalIgnoreCase));
+            if (anim.Key == default)
+                anim = GameResourceManager.Instance.ActionTimelines.FirstOrDefault(x => x.Value.Key.RawString.Contains($"/{fileName}", StringComparison.OrdinalIgnoreCase));
+            if (anim.Key == default)
+                anim = GameResourceManager.Instance.ActionTimelines.FirstOrDefault(x => x.Value.Key.RawString.Contains(fileName, StringComparison.OrdinalIgnoreCase));
 
-            if(emote.Value != null)
+            if(anim.Value != null)
             {
-                return (int)emote.Value.RowId;
+                return (
+                    (int)anim.Value.RowId,
+                    anim.Value.IsLoop
+                );
             }
 
-            return 0;
+            return (0, false);
         }
 
         public struct PMPMod
@@ -728,6 +926,77 @@ namespace IVPlugin.UI.Windows
         public List<VFXData> vFXDatas = new List<VFXData>();
 
         private string[] animationTypes = ["Base", "Startup", "Floor", "Sitting", "Blend", "Other", "Adjusted"];
+
+        // Cached values to avoid re-calculating every frame
+        private int correlatedAnimID = -1;
+        private string correlatedAnimName = "";
+        private List<string> correlatedEmoteList = new();
+        private bool animHasAnyOverride = false;
+
+        private void CalculateAnimData()
+        {
+            if (animID != correlatedAnimID)
+            {
+                correlatedEmoteList.Clear();
+                correlatedAnimID = animID;
+
+                GameResourceManager.Instance.ActionTimelines.TryGetValue((uint)correlatedAnimID, out var anim);
+                correlatedAnimName = anim?.Key ?? "";
+
+                foreach (var emote in GameResourceManager.Instance.Emotes)
+                {
+                    for (int i = 0; i < animationTypes.Length; ++i)
+                    {
+                        if (animID != 0 && emote.Value.ActionTimeline[i].Row == animID)
+                        {
+                            if (emote.Value.Name == string.Empty)
+                                correlatedEmoteList.Add($"Emote#{emote.Value.RowId} ({animationTypes[i]})");
+                            else
+                                correlatedEmoteList.Add($"{emote.Value.Name} ({animationTypes[i]})");
+                        }
+                    }
+                }
+            }
+
+            animHasAnyOverride = false;
+
+            foreach (var path in paths)
+            {
+                if (path.GamePath.StartsWith("chara/") && path.GamePath.EndsWith(correlatedAnimName + ".pap"))
+                    animHasAnyOverride = true;
+            }
+        }
+
+        private void DisplayAnimData()
+        {
+            if (!correlatedAnimName.IsNullOrEmpty())
+            {
+                ImGui.Text("Animation:");
+                ImGui.SameLine();
+                ImGui.Text(correlatedAnimName);
+
+                if (!animHasAnyOverride)
+                {
+                    using var pushColor = ImRaii.PushColor(ImGuiCol.Text, 0xFF8080FF);
+                    ImGui.Text("No Pap file seems to apply to this animation");
+                }
+            }
+            else
+            {
+                using var pushColor = ImRaii.PushColor(ImGuiCol.Text, 0xFF8080FF);
+                ImGui.Text("Animation ID does not seem to be valid");
+            }
+
+            ImGui.Text("Emote: ");
+            ImGui.SameLine();
+
+            if (correlatedEmoteList.Count == 0)
+                ImGui.Text("Unknown");
+
+            for (int i = 0; i < correlatedEmoteList.Count; ++i)
+                ImGui.Text(correlatedEmoteList[i]);
+        }
+
         public void Draw()
         {
             using (ImRaii.Disabled(ModCreationWindow.emotes[0] == this))
@@ -744,7 +1013,7 @@ namespace IVPlugin.UI.Windows
             ImGui.Text("Emote Type:");
             ImGui.SameLine(120);
             var currentModType = Enum.GetName(currentType);
-            ImGui.SetNextItemWidth(100);
+            ImGui.SetNextItemWidth(120);
             using (var combo = ImRaii.Combo("##EmoteType", currentModType))
             {
                 if (combo.Success)
@@ -762,12 +1031,12 @@ namespace IVPlugin.UI.Windows
             }
             ImGui.Text("Emote Command:");
             ImGui.SameLine(120);
-            ImGui.SetNextItemWidth(100);
+            ImGui.SetNextItemWidth(120);
             ImGui.InputText("##EmoteCommandInput", ref Command, 100);
             ImGui.Spacing();
             ImGui.Text("Animation ID:");
             ImGui.SameLine(120);
-            ImGui.SetNextItemWidth(70);
+            ImGui.SetNextItemWidth(100);
             ImGui.InputInt("##ReplacedAnimID", ref animID, 0);
             ImGui.SameLine();
             if (BearGUI.FontButton("emotesearch", FontAwesomeIcon.SearchLocation.ToIconString()))
@@ -775,11 +1044,24 @@ namespace IVPlugin.UI.Windows
                 ImGui.OpenPopup("EmoteSearch");
             }
             ImGui.SameLine();
-            BearGUI.FontText(FontAwesomeIcon.QuestionCircle.ToIconString(), 1.25f);
+
+            CalculateAnimData();
+
+            bool animHasError = correlatedAnimName.IsNullOrEmpty() || !animHasAnyOverride;
+
+            if (animHasError)
+                BearGUI.FontText(FontAwesomeIcon.ExclamationTriangle.ToIconString(), 1.25f, 0xFF80FFFF);
+            else
+                BearGUI.FontText(FontAwesomeIcon.QuestionCircle.ToIconString(), 1.25f);
 
             if (ImGui.IsItemHovered())
             {
-                ImGui.SetTooltip("ID of animation the pap temporarily replaces");
+                //ImGui.SetTooltip("ID of animation the pap temporarily replaces");
+                using var tooltip = ImRaii.Tooltip();
+
+                ImGui.Text("ID of animation the pap temporarily replaces");
+                ImGui.Separator();
+                DisplayAnimData();
             }
             ImGui.Spacing();
             ImGui.Text("Force Loop");
@@ -787,7 +1069,7 @@ namespace IVPlugin.UI.Windows
             ImGui.SetNextItemWidth(100);
             ImGui.Checkbox("##LoopEmote", ref isLooping);
             ImGui.Spacing();
-            ImGui.Text("Disable Weapons");
+            ImGui.Text("Hide Weapons");
             ImGui.SameLine(120);
             ImGui.SetNextItemWidth(100);
             ImGui.Checkbox("##HideWeapon", ref hideWeapon);
@@ -874,6 +1156,7 @@ namespace IVPlugin.UI.Windows
                                             if (selected)
                                             {
                                                 animID = (int)currentEmote.Value.RowId;
+                                                isLooping = currentEmote.Value.IsLoop;
                                                 ImGui.CloseCurrentPopup();
                                             }
                                         }
@@ -902,17 +1185,91 @@ namespace IVPlugin.UI.Windows
                                 if(dataPaths.Success)
                                 {
                                     var tempList = paths.ToList();
+                                    var raceMask = (RaceCodes)0;
+                                    var raceMaskDuplicate = (RaceCodes)0;
 
                                     for(var i = 0; i < tempList.Count; i++)
                                     {
                                         tempList[i].Draw(i, this);
+
+                                        var dupeMask = (raceMask & tempList[i].validRaces);
+                                        raceMaskDuplicate |= dupeMask;
+
+                                        if (!tempList[i].GamePath.IsNullOrEmpty())
+                                            raceMask |= tempList[i].validRaces;
+                                    }
+
+                                    if (raceMaskDuplicate != (RaceCodes)0)
+                                    {
+                                        ImGui.Separator();
+                                        var origTextColor = ImGui.GetColorU32(ImGuiCol.Text);
+                                        using var pushColor = ImRaii.PushColor(ImGuiCol.Text, 0xFF8080FF);
+                                        ImGui.Text("Some races are assigned multiple times:");
+
+                                        var raceCodes = Enum.GetNames(typeof(RaceCodes));
+
+                                        int displayCounter = 0;
+                                        for(var i = 0; i < raceCodes.Length - 1; i++)
+                                        {
+                                            RaceCodes raceCode = Enum.Parse<RaceCodes>(raceCodes[i]);
+                                            if (raceMaskDuplicate.HasFlag(raceCode))
+                                            {
+                                                if (displayCounter % 9 != 0)
+                                                    ImGui.SameLine();
+                                                ImGui.Text(raceCodes[i]);
+                                                if (ImGui.IsItemHovered())
+                                                {
+                                                    using var tooltip = ImRaii.Tooltip();
+                                                    using var pushColor2 = ImRaii.PushColor(ImGuiCol.Text, origTextColor);
+                                                    ImGui.Text($"{raceCodes[i]}: {raceCode.GetDescription()}");
+                                                }
+                                                ++displayCounter;
+                                            }
+                                        }
+                                    }
+
+                                    if (tempList.Count > 0 && raceMask != RaceCodes.all)
+                                    {
+                                        ImGui.Separator();
+                                        var origTextColor = ImGui.GetColorU32(ImGuiCol.Text);
+                                        using var pushColor = ImRaii.PushColor(ImGuiCol.Text, 0xFF80FFFF);
+
+                                        var raceCodes = Enum.GetNames(typeof(RaceCodes));
+
+                                        int displayCounter = 0;
+                                        for(var i = 0; i < raceCodes.Length - 1; i++)
+                                        {
+                                            RaceCodes raceCode = Enum.Parse<RaceCodes>(raceCodes[i]);
+
+                                            // Don't warn for explicitly unwanted genders
+                                            if ((ModCreationWindow.selectedCatagory == ModCatagory.Male || ModCreationWindow.selectedCatagory == ModCatagory.Gay) && i % 2 != 0)
+                                                continue;
+                                            if ((ModCreationWindow.selectedCatagory == ModCatagory.Female || ModCreationWindow.selectedCatagory == ModCatagory.Lesbian) && i % 2 != 1)
+                                                continue;
+
+                                            if (!raceMask.HasFlag(raceCode))
+                                            {
+                                                if (displayCounter == 0)
+                                                    ImGui.Text("Some races are not assigned:");
+                                                if (displayCounter % 9 != 0)
+                                                    ImGui.SameLine();
+                                                ImGui.Text(raceCodes[i]);
+                                                if (ImGui.IsItemHovered())
+                                                {
+                                                    using var tooltip = ImRaii.Tooltip();
+                                                    using var pushColor2 = ImRaii.PushColor(ImGuiCol.Text, origTextColor);
+                                                    ImGui.Text($"{raceCodes[i]}: {raceCode.GetDescription()}");
+                                                }
+                                                ++displayCounter;
+                                            }
+                                        }
                                     }
                                 }
                             }
                             ImGui.EndTabItem();
                         }
 
-                        if(ImGui.BeginTabItem("Persistant VFX Files"))
+                        if(ImGui.BeginTabItem("Persistent VFX Files"))
                         {
                             if(ImGui.Button("Add VFX Data"))
                             {
@@ -956,7 +1313,7 @@ namespace IVPlugin.UI.Windows
                 ImGui.BeginGroup();
                 ImGui.Text("Game Path:");
                 ImGui.SameLine(120);
-                ImGui.SetNextItemWidth(250);
+                ImGui.SetNextItemWidth(350);
                 ImGui.InputText("##GamePathInput", ref GamePath, 500);
                 ImGui.SameLine();
                 if (ImGui.Button("Valid Races"))
@@ -965,18 +1322,9 @@ namespace IVPlugin.UI.Windows
                 }
                 ImGui.Text("Local Path:");
                 ImGui.SameLine(120);
-                ImGui.SetNextItemWidth(250);
-                ImGui.InputText("##LocalpathInput", ref LocalPath, 500);
-                ImGui.SameLine();
-                if (ImGui.Button("Browse##LocalPath"))
-                {
-                    WindowsManager.Instance.fileDialogManager.OpenFileDialog("Square File", ".*", (Confirm, FilePath) =>
-                    {
-                        if (!Confirm) return;
-
-                        LocalPath = FilePath;
-                    });
-                }
+                ImGui.SetNextItemWidth(350);
+                //ImGui.InputText("##LocalpathInput", ref LocalPath, 500);
+                ModCreationWindow.DrawTruncatedLocalPath(ref LocalPath);
                 ImGui.EndGroup();
 
                 ImGui.SameLine();
@@ -1023,6 +1371,12 @@ namespace IVPlugin.UI.Windows
 
                                 validRaces = tempRaces;
                             }
+
+                            if (ImGui.IsItemHovered())
+                            {
+                                using var tooltip = ImRaii.Tooltip();
+                                ImGui.Text($"{raceCodes[i]}: {raceCode.GetDescription()}");
+                            }
                         }
 
                         if (ImGui.Button("Add All Races"))
@@ -1039,7 +1393,6 @@ namespace IVPlugin.UI.Windows
                     }
                 }
             }
-
         }
     }
 
@@ -1113,6 +1466,12 @@ namespace IVPlugin.UI.Windows
 
                             validRaces = tempRaces;
                         }
+
+                        if (ImGui.IsItemHovered())
+                        {
+                            using var tooltip = ImRaii.Tooltip();
+                            ImGui.Text($"{raceCodes[i]}: {raceCode.GetDescription()}");
+                        }
                     }
 
                     if (ImGui.Button("Add All Races"))
@@ -1159,16 +1518,16 @@ namespace IVPlugin.UI.Windows
                 ImGui.BeginGroup();
                 ImGui.Text("Game Path:");
                 ImGui.SameLine(120);
-                ImGui.SetNextItemWidth(250);
+                ImGui.SetNextItemWidth(350);
                 ImGui.InputText("##GamePathInput", ref GamePath, 500);
                 ImGui.Text("Local Path:");
                 ImGui.SameLine(120);
-                ImGui.SetNextItemWidth(250);
+                ImGui.SetNextItemWidth(350);
                 ImGui.InputText("##LocalpathInput", ref LocalPath, 500);
                 ImGui.SameLine();
                 if (ImGui.Button("Browse##LocalPath"))
                 {
-                    WindowsManager.Instance.fileDialogManager.OpenFileDialog("Square File", ".*", (Confirm, FilePath) =>
+                    WindowsManager.Instance.fileDialogForPMPManager.OpenFileDialog("Square File", ".*", (Confirm, FilePath) =>
                     {
                         if (!Confirm) return;
 
@@ -1253,6 +1612,12 @@ namespace IVPlugin.UI.Windows
             }
 
             ImGui.EndGroup();
+
+            if (selectedTrackIndex >= tracks.Length)
+                selectedTrackIndex = tracks.Length - 1;
+
+            if (selectedTrackIndex == -1)
+                return;
 
             ImGui.SameLine(400);
 
@@ -1351,7 +1716,7 @@ namespace IVPlugin.UI.Windows
                     value1Disabled = false;
                     value2Disabled = true;
                     format = "%d";
-                    value1Desc = "What montt to set between 1 and 31";
+                    value1Desc = "What month to set between 1 and 31";
                     break;
                 case TrackType.ChangeSkybox:
                     value1Text = "Skybox ID";

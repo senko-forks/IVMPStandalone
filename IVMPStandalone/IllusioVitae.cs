@@ -32,6 +32,9 @@ namespace IVPlugin
             resourceHandler = new(pluginInterface);
             commandManager = new();
             windowsManager = new(pluginInterface);
+
+            if (IsDebug && DalamudServices.PluginInterface.Reason == PluginLoadReason.Reload)
+                UI.Windows.ModCreationWindow.IsOpen = true;
         }
 
         public static bool InDebug()

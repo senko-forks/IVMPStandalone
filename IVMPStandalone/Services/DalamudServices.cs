@@ -21,6 +21,8 @@ namespace IVPlugin.Services
         [PluginService] public static IChatGui chatGui { get; private set; } = null!;
         [PluginService] public static IObjectTable objectTables { get; private set; } = null!;
         [PluginService] public static ITextureProvider textureProvider { get; private set; } = null!;
+        [PluginService] public static INotificationManager notificationManager { get; private set; } = null!;
+
 
         public static void Initialize(IDalamudPluginInterface pluginInterface)
         {
