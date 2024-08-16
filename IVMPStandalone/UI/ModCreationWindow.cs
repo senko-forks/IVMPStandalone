@@ -2,12 +2,15 @@ using Dalamud.Interface;
 using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Utility;
+using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 using ImGuiNET;
 using IVPlugin.Json;
 using IVPlugin.Mods.Structs;
 using IVPlugin.Resources;
 using IVPlugin.Services;
 using IVPlugin.UI.Helpers;
+using Lumina.Excel.GeneratedSheets;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -194,6 +197,13 @@ namespace IVPlugin.UI.Windows
             if (ImGui.Button("Import PMP file"))
             {
                 ParsePMP();
+            }
+
+            ImGui.SameLine();
+
+            if (ImGui.Button("Import IVMP file"))
+            {
+                ParseIVMP();
             }
 
             ImGui.SameLine();
@@ -521,6 +531,118 @@ namespace IVPlugin.UI.Windows
                 DalamudServices.log.Error(ex, "Error during PMP import");
                 ShowNotification("PMP import failed. See /xllog for more info");
             }
+        }
+
+        private static void ParseIVMP()
+        {
+            WindowsManager.Instance.fileDialogManager.OpenFileDialog("IVMP To Import", ".ivmp", (Confirm, FilePath) =>
+            {
+                if (!Confirm) return;
+                ResetFields();
+                DoParseIVMP(FilePath);
+            });
+        }
+
+        private static void DoParseIVMP(string FilePath)
+        {
+            var FinalPath = Path.Combine(DalamudServices.PluginInterface.ConfigDirectory.FullName, "IVMP");
+
+            if (Directory.Exists(FinalPath))
+            {
+                Directory.Delete(FinalPath, true);
+            }
+
+            using(var zip = new ZipArchive(File.Open(FilePath, FileMode.Open, FileAccess.Read)))
+            {
+                zip.ExtractToDirectory(FinalPath);
+            }
+
+            WindowsManager.Instance.fileDialogForPMPManager.CustomSideBarItems.Add(new ()
+            {
+                Name = "Imported IVMP",
+                Path = FinalPath,
+                Icon = FontAwesomeIcon.Folder,
+                Position = 999
+            });
+
+            ImportedPMPPath = FinalPath;
+
+            SaveAsDefaultName = Path.GetFileNameWithoutExtension(FilePath) + ".ivmp";
+
+            foreach(var file in Directory.GetFiles(FinalPath))
+            {
+                if (Path.GetFileName(file) == "meta.data")
+                {
+                    var meta = JsonHandler.Deserialize<CustomEmote>(File.ReadAllText(file));
+
+                    ModName = meta.Name;
+                    ModAuthor = meta.Author;
+                    CamPath = meta.cameraPath;
+                    allowNPC = meta.allowNPC;
+                    selectedCatagory = meta.category ?? ModCatagory.Global;
+                    emotes = new();
+
+                    foreach (var emote in meta.emoteData)
+                    {
+                        var modEmote = new ModEmoteTab()
+                        {
+                            Command = emote.emoteCommand,
+                            tracklistPath = emote.tracklistPath ?? string.Empty,
+                            animID = emote.emoteID,
+                            currentType = emote.emoteType ?? EmoteType.Full,
+                            isLooping = emote.isLooping,
+                            hideWeapon = emote.disableWeapon
+                        };
+
+                        foreach (var path in emote.dataPaths)
+                        {
+                            modEmote.paths.Add(new DataPathsUI()
+                            {
+                                GamePath = path.GamePath,
+                                LocalPath = Path.Combine(FinalPath, path.LocalPath.Replace("/", "\\")),
+                                validRaces = path.validRaces
+                            });
+                        }
+
+                        foreach (var vfx in emote.vfxData)
+                        {
+                            var modVfx = new VFXData()
+                            {
+                                vfxType = vfx.VFXType,
+                                validRaces = vfx.validRaces,
+                                vfxPaths = new()
+                            };
+
+                            foreach (var path in vfx.vfxDatapaths)
+                            {
+                                modVfx.vfxPaths.Add(new VFXPath(){
+                                    GamePath = path.GamePath,
+                                    LocalPath = Path.Combine(FinalPath, path.LocalPath.Replace("/", "\\"))
+                                });
+                            }
+
+                            modEmote.vFXDatas.Add(modVfx);
+                        }
+
+                        emotes.Add(modEmote);
+                    }
+
+                    foreach (var path in meta.SharedResources)
+                    {
+                        sharedResources.paths.Add(new DataPathsUI()
+                        {
+                            GamePath = path.GamePath,
+                            LocalPath = Path.Combine(FinalPath, path.LocalPath.Replace("/", "\\")),
+                            validRaces = path.validRaces
+                        });
+                    }
+
+                    // XXX: BGM Data is not supported by the editor yet and will be lost
+
+                    break;
+                }
+            }
+
         }
 
         public static void CreateIVMP()
